@@ -65,14 +65,14 @@ class SAM6DClient:
         raise ConnectionError("Connection closed")
       data += chunk
 
-    return pickle.loads(data)
+    return data
 
   def disconnect(self):
     """Disconnect from the server"""
     if self.socket:
       self.socket.close()
 
-def receive_image(connection, address):
+def receive_images(connection, address):
   print(f"Connection from {address} has been established!")
 
   image_size_data = connection.recv(4)
@@ -124,9 +124,11 @@ def run_inference(img0, img1, baseline, K, model, args):
   K[:2] *= scale
   depth = K[0, 0] * baseline / disp
   depth_mm = (depth * 1000.0).astype(np.uint16)
-  return Image.fromarray(depth_mm)
+  return depth_mm
+  #return cv2.cvtColor(depth_mm, cv2.COLOR_RGB2BGR)
+  #return Image.fromarray(depth_mm)
 
-def start_server(args, model, host='0.0.0.0', port=12345):
+def start_server(args, model, host='0.0.0.0', port=12345, clientport=8000):
   server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
   server_socket.bind((host, port))
   server_socket.listen(5)
@@ -137,18 +139,22 @@ def start_server(args, model, host='0.0.0.0', port=12345):
     K = np.array(list(map(float, lines[0].rstrip().split()))).astype(np.float32).reshape(3, 3)
     baseline = float(lines[1])
 
-  sam6d_client = SAM6DClient()
+  sam6d_client = SAM6DClient(port=clientport)
   sam6d_client.connect()
-  connection, address = server_socket.accept()
   while True:
+    connection, address = server_socket.accept()
     img0, img1 = receive_images(connection, address)
-    depth_img = run_inference(img0, img1, baseline, K, model, args)
+    depth_array = run_inference(img0, img1, baseline, K, model, args)
 
+    img0bytes = cv2.imencode('.png', img0)[1].tobytes()
+    _, depth_png = cv2.imencode('.png', depth_array)
+    depth_bytes = depth_png.tobytes()
+    # server_socket send img0b
     # create request compress
     request = {
       'action': 'sam6d_inference',
-      'rgb_bytes': img0,
-      'depth_bytes': depth_img,
+      'rgb_bytes': img0bytes,
+      'depth_bytes': depth_bytes,
       'det_score_thresh': 0.5,
       'visualize': False
     }
@@ -156,8 +162,8 @@ def start_server(args, model, host='0.0.0.0', port=12345):
     response = sam6d_client.receive_data()
 
     # server_socket send size
-    server_socket.send(struct.pack('!I', len(response)))
-    server_socket.sendall(response)
+    connection.send(struct.pack('!I', len(response)))
+    connection.sendall(response)
 
 if __name__=="__main__":
   code_dir = os.path.dirname(os.path.realpath(__file__))
@@ -173,12 +179,14 @@ if __name__=="__main__":
   parser.add_argument('--denoise_cloud', type=int, default=1, help='whether to denoise the point cloud')
   parser.add_argument('--denoise_nb_points', type=int, default=30, help='number of points to consider for radius outlier removal')
   parser.add_argument('--denoise_radius', type=float, default=0.03, help='radius to use for outlier removal')
+  parser.add_argument('--sam6dport', type=int, default=8000, help='port sam6d is running on')
+  parser.add_argument('--isaacsimport', type=int, default=12345, help='port to listen for connection from isaac sim')
   args = parser.parse_args()
 
   set_logging_format()
   set_seed(0)
   torch.autograd.set_grad_enabled(False)
-  os.makedirs(args.out_dir, exist_ok=True)
+  #os.makedirs(args.out_dir, exist_ok=True)
 
   ckpt_dir = args.ckpt_dir
   cfg = OmegaConf.load(f'{os.path.dirname(ckpt_dir)}/cfg.yaml')
@@ -202,4 +210,4 @@ if __name__=="__main__":
   scale = args.scale
   assert scale<=1, "scale must be <=1"
 
-  start_server(args, model)
+  start_server(args, model, port=args.isaacsimport, clientport=args.sam6dport)
