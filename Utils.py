@@ -23,7 +23,8 @@ sys.path.append(code_dir)
 
 def set_logging_format(level=logging.INFO):
   importlib.reload(logging)
-  FORMAT = '%(message)s'
+  #FORMAT = '%(message)s'
+  FORMAT='%(asctime)s - %(levelname)s - %(message)s'
   logging.basicConfig(level=level, format=FORMAT, datefmt='%m-%d|%H:%M:%S')
 
 set_logging_format()

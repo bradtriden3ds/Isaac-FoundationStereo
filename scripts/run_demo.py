@@ -14,7 +14,7 @@ from omegaconf import OmegaConf
 from core.utils.utils import InputPadder
 from Utils import *
 from core.foundation_stereo import *
-
+from PIL import Image
 
 if __name__=="__main__":
   code_dir = os.path.dirname(os.path.realpath(__file__))
@@ -61,7 +61,14 @@ if __name__=="__main__":
 
   code_dir = os.path.dirname(os.path.realpath(__file__))
   img0 = imageio.imread(args.left_file)
+  #remove alpha channel if it exists
+  if img0.shape[2] == 4:
+    b, g, r, a = cv2.split(img0)
+    img0 = cv2.merge((b, g, r))
   img1 = imageio.imread(args.right_file)
+  if img1.shape[2] == 4:
+    b, g, r, a = cv2.split(img1)
+    img1 = cv2.merge((b, g, r))  
   scale = args.scale
   assert scale<=1, "scale must be <=1"
   img0 = cv2.resize(img0, fx=scale, fy=scale, dsize=None)
@@ -101,6 +108,12 @@ if __name__=="__main__":
     K[:2] *= scale
     depth = K[0,0]*baseline/disp
     np.save(f'{args.out_dir}/depth_meter.npy', depth)
+
+    # save to depth_map.png file in mm
+    depth_mm = (depth * 1000.0).astype(np.uint16)
+    image = Image.fromarray(depth_mm)
+    image.save(f'{args.out_dir}/depth_map.png')
+
     xyz_map = depth2xyzmap(depth, K)
     pcd = toOpen3dCloud(xyz_map.reshape(-1,3), img0_ori.reshape(-1,3))
     keep_mask = (np.asarray(pcd.points)[:,2]>0) & (np.asarray(pcd.points)[:,2]<=args.z_far)
@@ -116,12 +129,12 @@ if __name__=="__main__":
       o3d.io.write_point_cloud(f'{args.out_dir}/cloud_denoise.ply', inlier_cloud)
       pcd = inlier_cloud
 
-    logging.info("Visualizing point cloud. Press ESC to exit.")
-    vis = o3d.visualization.Visualizer()
-    vis.create_window()
-    vis.add_geometry(pcd)
-    vis.get_render_option().point_size = 1.0
-    vis.get_render_option().background_color = np.array([0.5, 0.5, 0.5])
-    vis.run()
-    vis.destroy_window()
+    # logging.info("Visualizing point cloud. Press ESC to exit.")
+    # vis = o3d.visualization.Visualizer()
+    # vis.create_window()
+    # vis.add_geometry(pcd)
+    # vis.get_render_option().point_size = 1.0
+    # vis.get_render_option().background_color = np.array([0.5, 0.5, 0.5])
+    # vis.run()
+    # vis.destroy_window()
 

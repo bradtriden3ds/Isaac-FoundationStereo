@@ -75,27 +75,37 @@ class SAM6DClient:
 def receive_images(connection, address):
   print(f"Connection from {address} has been established!")
 
-  image_size_data = connection.recv(4)
-  image_size = struct.unpack('!I', image_size_data)[0]
-  image0_data = b''
-  while True:
-    data = connection.recv(1048576)
-    image0_data += data
-    if len(image0_data) >= image_size:
-      break
+  image0_data = receive_data(connection)
   img0 = cv2.imdecode(np.frombuffer(image0_data, dtype=np.uint8), cv2.IMREAD_COLOR)
 
-  image_size_data = connection.recv(4)
-  image_size = struct.unpack('!I', image_size_data)[0]
-  image1_data = b''
-  while True:
-    data = connection.recv(1048576)
-    image1_data += data
-    if len(image1_data) >= image_size:
-      break
+  image1_data = receive_data(connection)
   img1 = cv2.imdecode(np.frombuffer(image1_data, dtype=np.uint8), cv2.IMREAD_COLOR)
 
   return img0, img1
+
+def receive_data(conn):
+    """Receive data over socket with length prefix"""
+    # First, receive the length of the message
+    length_data = b''
+    while len(length_data) < 4:
+        chunk = conn.recv(4 - len(length_data))
+        if not chunk:
+            raise ConnectionError("Connection closed")
+        length_data += chunk
+    
+    length = struct.unpack('!I', length_data)[0]
+    logging.info(f"Receiving image of size {length}")
+    # Now receive the actual data
+    data = b''
+    while len(data) < length:
+        chunk = conn.recv(length - len(data))
+        logging.info(f"Received packet of size {len(data)}.  Total received {len(data)}")
+        if not chunk:
+            raise ConnectionError("Connection closed")
+        data += chunk
+    logging.info(f"Receiving image complete")
+    return data
+
 
 def run_inference(img0, img1, baseline, K, model, args):
   img0 = cv2.resize(img0, fx=scale, fy=scale, dsize=None)
@@ -141,29 +151,52 @@ def start_server(args, model, host='0.0.0.0', port=12345, clientport=8000):
 
   sam6d_client = SAM6DClient(port=clientport)
   sam6d_client.connect()
-  while True:
-    connection, address = server_socket.accept()
-    img0, img1 = receive_images(connection, address)
-    depth_array = run_inference(img0, img1, baseline, K, model, args)
+  
+  try:
+    running = True
+    while running:
+      try:
+        connection, address = server_socket.accept()
+        logging.info(f"connection received from {address}")
 
-    img0bytes = cv2.imencode('.png', img0)[1].tobytes()
-    _, depth_png = cv2.imencode('.png', depth_array)
-    depth_bytes = depth_png.tobytes()
-    # server_socket send img0b
-    # create request compress
-    request = {
-      'action': 'sam6d_inference',
-      'rgb_bytes': img0bytes,
-      'depth_bytes': depth_bytes,
-      'det_score_thresh': 0.5,
-      'visualize': False
-    }
-    sam6d_client.send_data(request)
-    response = sam6d_client.receive_data()
+        img0, img1 = receive_images(connection, address)
+        depth_array = run_inference(img0, img1, baseline, K, model, args)
 
-    # server_socket send size
-    connection.send(struct.pack('!I', len(response)))
-    connection.sendall(response)
+        logging.info(f"inference complete")
+        img0bytes = cv2.imencode('.png', img0)[1].tobytes()
+        _, depth_png = cv2.imencode('.png', depth_array)
+        depth_bytes = depth_png.tobytes()
+        # server_socket send img0b
+        # create request compress
+        request = {
+          'action': 'sam6d_inference',
+          'rgb_bytes': img0bytes,
+          'depth_bytes': depth_bytes,
+          'det_score_thresh': 0.5,
+          'visualize': False
+        }
+        sam6d_client.send_data(request)
+        logging.info(f"sent depth + image to SAM6D")
+        response = sam6d_client.receive_data()
+        logging.info(f"received responsed from SAM6D")
+
+        # server_socket send size
+        connection.send(struct.pack('!I', len(response)))
+        connection.sendall(response)
+        logging.info(f"sent response to isaac")
+      except OSError:
+        break
+      except socket.timeout:
+        running=False
+        break
+  except Exception as e:
+    logging.error(f"Server error: {str(e)}")
+  finally:
+    """Cleanup server resources"""
+    logging.info("Shutting down server...")
+    if server_socket:
+        server_socket.close()
+    logging.info("Server shutdown complete")  
 
 if __name__=="__main__":
   code_dir = os.path.dirname(os.path.realpath(__file__))
